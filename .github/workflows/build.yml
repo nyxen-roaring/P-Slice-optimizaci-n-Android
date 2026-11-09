@@ -91,6 +91,30 @@ jobs:
           haxelib run lime config ANDROID_SETUP true
           printf '%s' "$PLAYSTORE_FIREBASE" > ./setup/google-services.json
 
+          # Si el secret falta (p. ej. en un fork) o no es JSON válido, usa uno de relleno
+          if ! python3 -c "import json;json.load(open('./setup/google-services.json'))" 2>/dev/null; then
+            echo "::warning::PLAYSTORE_FIREBASE vacío o inválido; usando google-services.json de relleno"
+            cat > ./setup/google-services.json <<'JSON'
+          {
+            "project_info": {
+              "project_number": "000000000000",
+              "project_id": "dummy-project",
+              "storage_bucket": "dummy-project.appspot.com"
+            },
+            "client": [
+              {
+                "client_info": {
+                  "mobilesdk_app_id": "1:000000000000:android:0000000000000000",
+                  "android_client_info": { "package_name": "CAMBIA.AQUI.TU.PACKAGE" }
+                },
+                "api_key": [ { "current_key": "AIzaSyDummyKeyDummyKeyDummyKeyDummyKey0" } ]
+              }
+            ],
+            "configuration_version": "1"
+          }
+          JSON
+          fi
+
       - name: Compile
         env:
           GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.parallel=true -Dorg.gradle.caching=true
