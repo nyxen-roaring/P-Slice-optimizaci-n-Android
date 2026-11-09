@@ -2,11 +2,13 @@ on:
   workflow_call:
     inputs:
       name:
-        required: true
+        required: false
         type: string
+        default: Android
       os:
-        required: true
+        required: false
         type: string
+        default: ubuntu-latest
       buildArgs:
         required: true
         type: string
@@ -23,8 +25,9 @@ on:
         required: true
         type: string
       exportPath:
-        required: true
+        required: false
         type: string
+        default: android
 
 env:
   HAXE_VERSION: 4.3.6
@@ -32,51 +35,53 @@ env:
 
 jobs:
   build:
-    name: Build
+    name: Build Android
     runs-on: ${{ inputs.os }}
+    timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Setup Haxe
-        uses: krdlab/setup-haxe@master
+        uses: krdlab/setup-haxe@v1
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
-      - name: Set XCode app
-        if: inputs.os == 'macos-15'
-        run: sudo xcode-select -s /Applications/Xcode_16.4.app
 
       - name: Restore Libraries for compilation
-        id: load-lib-cache
-        uses: actions/cache@v3
+        uses: actions/cache/restore@v4
         with:
-          # not caching the bin folder to prevent asset duplication and stuff like that
           key: ${{ inputs.cacheLibrariesPath }}
           fail-on-cache-miss: true
           enableCrossOsArchive: true
           path: |
             .haxelib/
-          restore-keys: |
-            ${{ inputs.cacheLibrariesPath }}
+
       - name: Restore existing build cache for faster compilation
         id: load-cache
-        uses: actions/cache@v3
+        uses: actions/cache/restore@v4
         with:
-          # not caching the bin folder to prevent asset duplication and stuff like that
-          key: ${{ inputs.cachePath }}
-          path: |
-            export/release/${{ inputs.exportPath }}/haxe/
-            export/release/${{ inputs.exportPath }}/obj/
+          # La key lleva el run_id: cada build guarda su propio cache
+          # y restaura el más reciente con el prefijo (sin borrar nada a mano).
+          key: ${{ inputs.cachePath }}-${{ github.run_id }}
           restore-keys: |
-            cache-build-${{ inputs.exportPath }}
-            
+            ${{ inputs.cachePath }}-
+          path: |
+            export/release/android/haxe/
+            export/release/android/obj/
 
-      - name: Install libVLC
-        if: inputs.exportPath == 'linux'
-        run: sudo apt install libvlc-dev libvlccore-dev
+      - name: Restore Gradle cache
+        uses: actions/cache@v4
+        with:
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', 'project.xml') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
 
       - name: Configure Android
-        if: inputs.exportPath == 'android'
         env:
           PLAYSTORE_FIREBASE: ${{ secrets.PLAYSTORE_FIREBASE }}
         run: |
@@ -86,81 +91,45 @@ jobs:
           haxelib run lime config ANDROID_SETUP true
           printf '%s' "$PLAYSTORE_FIREBASE" > ./setup/google-services.json
 
-      - name: Configure iOS
-        if: inputs.name == 'iOS'
-        env:
-          PLAYSTORE_FIREBASE_IOS: ${{ secrets.PLAYSTORE_FIREBASE_IOS }}
-        run: printf '%s' "$PLAYSTORE_FIREBASE_IOS" > ./setup/GoogleService-Info.plist
-
       - name: Compile
+        env:
+          GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.parallel=true -Dorg.gradle.caching=true
         run: haxelib run lime build ${{ inputs.buildArgs }}
-          # setup/google-services.json
-
-      - name: Upload debugging symbols (Android)
-        if: inputs.exportPath == 'android' 
-        run: sh ./setup/firebase_spell.sh
-
-      - name: Upload debugging symbols (iOS)
-        if: inputs.name == 'iOS'
-        run: sh ./setup/firebase_ios.sh
 
       - name: Sign APK with the proper key
-        if: inputs.exportPath == 'android'
         env:
           OUT_DIR: ./export/release/android/bin/app/build/outputs/apk/release/
           SIGNING_KEY: ${{ secrets.MIKOLKA_PASSWORD }}
           SIGNING_ALIAS: pslice
           SIGNING_FILE: ${{ secrets.MIKOLKA_KEYSTORE }}
         run: |
-          rm -f ./key.keystore;
-          echo $SIGNING_FILE | base64 -d > ./key.keystore;
-          sha256sum ./key.keystore;
+          rm -f ./key.keystore
+          printf '%s' "$SIGNING_FILE" | base64 -d > ./key.keystore
 
-          mv '${{env.OUT_DIR}}PSliceEngine-release.apk' '${{env.OUT_DIR}}PSliceEngine-unsigned.apk';
-          $ANDROID_HOME/build-tools/35.0.1/zipalign -P 16 -f -v 4 '${{env.OUT_DIR}}PSliceEngine-unsigned.apk' '${{env.OUT_DIR}}PSliceEngine-release.apk' > /dev/null;
+          mv '${{ env.OUT_DIR }}PSliceEngine-release.apk' '${{ env.OUT_DIR }}PSliceEngine-unsigned.apk'
+          $ANDROID_HOME/build-tools/35.0.1/zipalign -P 16 -f 4 '${{ env.OUT_DIR }}PSliceEngine-unsigned.apk' '${{ env.OUT_DIR }}PSliceEngine-release.apk'
 
-          $ANDROID_HOME/build-tools/35.0.1/apksigner sign --ks key.keystore --ks-key-alias $SIGNING_ALIAS --ks-pass "env:SIGNING_KEY" --key-pass "env:SIGNING_KEY" '${{env.OUT_DIR}}PSliceEngine-release.apk';
-          rm '${{env.OUT_DIR}}PSliceEngine-unsigned.apk';
-
-      - name: Make IPA
-        if: inputs.name == 'iOS'
-        run: |
-          cd export/release/ios/build/Release-iphoneos
-          mkdir Payload
-          mv *.app Payload
-          zip -r ${{ env.PROJECT_NAME }}.ipa Payload
+          $ANDROID_HOME/build-tools/35.0.1/apksigner sign --ks key.keystore --ks-key-alias $SIGNING_ALIAS --ks-pass "env:SIGNING_KEY" --key-pass "env:SIGNING_KEY" '${{ env.OUT_DIR }}PSliceEngine-release.apk'
+          rm '${{ env.OUT_DIR }}PSliceEngine-unsigned.apk' ./key.keystore
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@main
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.artifactName }}
           path: ${{ inputs.artifactPath }}
-          if-no-files-found: error    
-      - name: Clearing already existing cache
-        uses: actions/github-script@v6
+          if-no-files-found: error
+          compression-level: 0 # el APK ya está comprimido
+
+      # Se ejecuta después de subir el APK para no retrasarlo
+      - name: Upload debugging symbols (Android)
+        continue-on-error: true
+        run: sh ./setup/firebase_spell.sh
+
+      - name: Save build cache
+        if: always()
+        uses: actions/cache/save@v4
         with:
-          script: |
-            const caches = await github.rest.actions.getActionsCacheList({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-            })
-            for (const cache of caches.data.actions_caches) {
-              if (cache.key == "${{ inputs.cachePath }}") {
-                console.log('Clearing ' + cache.key + '...')
-                await github.rest.actions.deleteActionsCacheById({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  cache_id: cache.id,
-                })
-                console.log("Cache cleared.")
-              }
-            }
-      - name: Uploading new cache
-        uses: actions/cache@v3
-        with:
-          key: ${{ inputs.cachePath }}
+          key: ${{ inputs.cachePath }}-${{ github.run_id }}
           path: |
-            export/release/${{ inputs.exportPath }}/haxe/
-            export/release/${{ inputs.exportPath }}/obj/
-          restore-keys: |
-            ${{ inputs.cachePath }}  
+            export/release/android/haxe/
+            export/release/android/obj/
