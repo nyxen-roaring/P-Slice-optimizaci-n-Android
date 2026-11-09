@@ -10,57 +10,42 @@ on:
       setupScript:
         required: true
         type: string
-# PE10-Desktop_Cache
+
 env:
   HAXE_VERSION: 4.3.6
-  PROJECT_NAME: PSliceEngine
 
 jobs:
   build:
-    name: Build
+    name: Libraries
     runs-on: ${{ inputs.os }}
+    timeout-minutes: 30
     steps:
-      - name: Restore Libraries for compilation
+      # Un solo paso de cache: restaura y, si hubo miss, guarda solo al terminar el job
+      - name: Restore Libraries cache
         id: load-lib-cache
-        uses: actions/cache@v3
-        with:
-          # not caching the bin folder to prevent asset duplication and stuff like that
-          key:  ${{ inputs.CACHE_NAME }}
-          enableCrossOsArchive: true
-          path: |
-            .haxelib/
-          restore-keys: |
-             ${{ inputs.CACHE_NAME }}
-
-      - name: Checkout
-        if: steps.load-lib-cache.outputs.cache-hit != 'true'
-        uses: actions/checkout@main
-
-      - name: Setup Haxe
-        if: steps.load-lib-cache.outputs.cache-hit != 'true'
-        uses: krdlab/setup-haxe@master
-        with:
-          haxe-version: ${{ env.HAXE_VERSION }}
-
-      - name: Setup haxelib
-        if: steps.load-lib-cache.outputs.cache-hit != 'true'
-        run: haxelib newrepo    
-
-      - name: Install Libraries
-        if: steps.load-lib-cache.outputs.cache-hit != 'true'
-        run: ${{ inputs.setupScript }}
-
-      - name: Install hxvlc for windows
-        run: haxelib install hxvlc 2.2.2 --quiet
-        if: inputs.os == 'ubuntu-24.04' && steps.load-lib-cache.outputs.cache-hit != 'true'
-   
-      - name: Uploading new cache
-        if: steps.load-lib-cache.outputs.cache-hit != 'true'
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           key: ${{ inputs.CACHE_NAME }}
           enableCrossOsArchive: true
           path: |
             .haxelib/
-          restore-keys: |
-            ${{ inputs.CACHE_NAME }}
+
+      - name: Checkout
+        if: steps.load-lib-cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Haxe
+        if: steps.load-lib-cache.outputs.cache-hit != 'true'
+        uses: krdlab/setup-haxe@v1
+        with:
+          haxe-version: ${{ env.HAXE_VERSION }}
+
+      - name: Setup haxelib
+        if: steps.load-lib-cache.outputs.cache-hit != 'true'
+        run: haxelib newrepo
+
+      - name: Install Libraries
+        if: steps.load-lib-cache.outputs.cache-hit != 'true'
+        run: ${{ inputs.setupScript }}
