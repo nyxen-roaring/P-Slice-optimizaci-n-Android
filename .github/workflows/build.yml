@@ -125,21 +125,57 @@ jobs:
           GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.parallel=true -Dorg.gradle.caching=true
         run: haxelib run lime build ${{ inputs.buildArgs }}
 
-      - name: Sign APK with the proper key
+      # Keystore propio: se crea una sola vez y se reutiliza desde el cache,
+      # así todos los builds quedan firmados con la misma clave.
+      - name: Restore generated keystore
+        uses: actions/cache@v4
+        with:
+          key: pslice-generated-keystore-v1
+          path: .signing/
+
+      - name: Sign APK
         env:
           OUT_DIR: ./export/release/android/bin/app/build/outputs/apk/release/
           SIGNING_KEY: ${{ secrets.MIKOLKA_PASSWORD }}
           SIGNING_ALIAS: pslice
           SIGNING_FILE: ${{ secrets.MIKOLKA_KEYSTORE }}
         run: |
+          KEYTOOL="$JAVA_HOME_17_X64/bin/keytool"
           rm -f ./key.keystore
-          printf '%s' "$SIGNING_FILE" | base64 -d > ./key.keystore
+          USE_OWN=1
 
-          mv '${{ env.OUT_DIR }}PSliceEngine-release.apk' '${{ env.OUT_DIR }}PSliceEngine-unsigned.apk'
-          $ANDROID_HOME/build-tools/35.0.1/zipalign -P 16 -f 4 '${{ env.OUT_DIR }}PSliceEngine-unsigned.apk' '${{ env.OUT_DIR }}PSliceEngine-release.apk'
+          # 1) Si hay secrets y el keystore es válido, se usan
+          if [ -n "$SIGNING_FILE" ] && [ -n "$SIGNING_KEY" ]; then
+            printf '%s' "$SIGNING_FILE" | base64 -d > ./key.keystore 2>/dev/null || true
+            if "$KEYTOOL" -list -keystore ./key.keystore -storepass "$SIGNING_KEY" >/dev/null 2>&1; then
+              KS_PASS="$SIGNING_KEY"
+              USE_OWN=0
+            else
+              echo "::warning::Keystore de los secrets inválido; se usará uno propio"
+            fi
+          fi
 
-          $ANDROID_HOME/build-tools/35.0.1/apksigner sign --ks key.keystore --ks-key-alias $SIGNING_ALIAS --ks-pass "env:SIGNING_KEY" --key-pass "env:SIGNING_KEY" '${{ env.OUT_DIR }}PSliceEngine-release.apk'
-          rm '${{ env.OUT_DIR }}PSliceEngine-unsigned.apk' ./key.keystore
+          # 2) Si no, se usa (o se crea) un keystore propio
+          if [ "$USE_OWN" = "1" ]; then
+            KS_PASS="pslice-own-key"
+            mkdir -p .signing
+            if [ ! -f .signing/own.keystore ]; then
+              echo "Generando keystore propio..."
+              "$KEYTOOL" -genkeypair -storetype PKCS12 \
+                -keystore .signing/own.keystore -alias "$SIGNING_ALIAS" \
+                -keyalg RSA -keysize 2048 -validity 10000 \
+                -storepass "$KS_PASS" -keypass "$KS_PASS" \
+                -dname "CN=PSlice, OU=Dev, O=PSlice, C=US"
+            fi
+            cp .signing/own.keystore ./key.keystore
+          fi
+          export KS_PASS
+
+          mv "${{ env.OUT_DIR }}PSliceEngine-release.apk" "${{ env.OUT_DIR }}PSliceEngine-unsigned.apk"
+          $ANDROID_HOME/build-tools/35.0.1/zipalign -P 16 -f 4 "${{ env.OUT_DIR }}PSliceEngine-unsigned.apk" "${{ env.OUT_DIR }}PSliceEngine-release.apk"
+          $ANDROID_HOME/build-tools/35.0.1/apksigner sign --ks key.keystore --ks-key-alias "$SIGNING_ALIAS" --ks-pass env:KS_PASS --key-pass env:KS_PASS "${{ env.OUT_DIR }}PSliceEngine-release.apk"
+          $ANDROID_HOME/build-tools/35.0.1/apksigner verify "${{ env.OUT_DIR }}PSliceEngine-release.apk"
+          rm "${{ env.OUT_DIR }}PSliceEngine-unsigned.apk" ./key.keystore
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
