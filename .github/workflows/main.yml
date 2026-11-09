@@ -36,5 +36,5 @@ jobs:
       buildArgs: "android -arm64"
       cacheLibrariesPath: P-Slice.1.0.mobile-cache
       artifactName: P-Slice.1.0.android
-      cachePath: P-Slice.1.0.build-android
+      cachePath: P-Slice.1.0.build-android-2
       artifactPath: "export/release/android/bin/app/build/outputs/apk/release/*.apk"

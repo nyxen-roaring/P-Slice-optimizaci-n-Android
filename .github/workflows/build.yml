@@ -91,33 +91,18 @@ jobs:
           haxelib run lime config ANDROID_SETUP true
           printf '%s' "$PLAYSTORE_FIREBASE" > ./setup/google-services.json
 
-          # Si el secret falta (p. ej. en un fork) o no es JSON válido, usa uno de relleno
-          echo "Tamaño del secret: $(wc -c < ./setup/google-services.json) bytes"
+          # Sin Firebase real: se desactiva el crash handler en vez de usar una config falsa
+          # (una config falsa puede cerrar la app al abrirla y además alarga el build)
           if ! python3 -c "
           import json
           d = json.load(open('./setup/google-services.json', encoding='utf-8-sig'))
           assert isinstance(d, dict) and d.get('client') and d.get('project_info')
           " 2>/dev/null; then
-            echo "::warning::PLAYSTORE_FIREBASE vacío o inválido; usando google-services.json de relleno"
-            cat > ./setup/google-services.json <<'JSON'
-          {
-            "project_info": {
-              "project_number": "000000000000",
-              "project_id": "dummy-project",
-              "storage_bucket": "dummy-project.appspot.com"
-            },
-            "client": [
-              {
-                "client_info": {
-                  "mobilesdk_app_id": "1:000000000000:android:0000000000000000",
-                  "android_client_info": { "package_name": "com.mikolka9144.pslice" }
-                },
-                "api_key": [ { "current_key": "AIzaSyDummyKeyDummyKeyDummyKeyDummyKey0" } ]
-              }
-            ],
-            "configuration_version": "1"
-          }
-          JSON
+            echo "::warning::PLAYSTORE_FIREBASE vacío o inválido; compilando SIN Firebase Crashlytics"
+            for f in project.xml Project.xml; do
+              [ -f "$f" ] && sed -i '/name="FIREBASE_CRASH_HANDLER"/d' "$f"
+            done
+            rm -f ./setup/google-services.json
           fi
 
       - name: Compile
